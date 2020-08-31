@@ -51,9 +51,15 @@ def main():
             break
         print("File does not exist. Try again.")
 
-    print("When was the last transaction imported to Wave (eg 2020-07-28 14:48:43)?")
+    print(
+        "When was the last transaction imported to Wave (eg 2020-07-28 14:48:43)? "
+        "Press enter to include all."
+    )
     while 1:
         start_date_str = input()
+        if not start_date_str:
+            start_date_dt = datetime(2000, 1, 1)
+            break
         try:
             start_date_dt = datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
         except ValueError:
@@ -62,7 +68,7 @@ def main():
             break
 
     filename, ext = in_path.rsplit(".", 1)
-    out_path = f"{filename}_[CONVERTED].{ext}"
+    out_path = f"{filename}_CONVERTED.{ext}"
     if Path(out_path).exists():
         print(f"Target file '{out_path}' already exists. Do you want to overwrite y/N?")
         overwrite = input()
