@@ -16,20 +16,24 @@ def read_input(start_datetime: datetime, in_path: str) -> List[Dict]:
 
 def _extract_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
     result = []
+    description_header = "Description"
+    settlement_amount_header = "Settlement Amount (GBP)"
+    transaction_amount_header = "Transaction Amount"
+    transaction_date_header = "Transaction Date"
     for i, c in enumerate(content):
-        c_dt = datetime.strptime(c["Date & Time"], "%Y-%m-%d %H:%M:%S")
+        c_dt = datetime.strptime(c[transaction_date_header], "%Y-%m-%d %H:%M:%S")
         # ignore lines older than the start datetime
         if c_dt <= start_datetime:
             continue
-        amount = c["Transaction Amount"]
-        settlement = c["Settlement Amount (GBP)"]
+        amount = c[transaction_amount_header]
+        settlement = c[settlement_amount_header]
         if amount != settlement:
             print(f"Line {i} amounts don't match {amount} != {settlement}")
         result += [
             {
-                "Date & Time": c_dt.strftime("%Y-%m-%d"),
-                "Description": c["Description"],
-                "Transaction Amount": amount,
+                description_header: c[description_header],
+                transaction_amount_header: amount,
+                transaction_date_header: c_dt.strftime("%Y-%m-%d"),
             }
         ]
     return result
