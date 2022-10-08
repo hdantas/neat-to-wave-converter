@@ -4,14 +4,15 @@ This script converts an extract from Neat into a format Wave can understand
 import csv
 import enum
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List
 
 
 class InputSource(enum.Enum):
     NEAT = enum.auto()
     AIRWALLEX = enum.auto()
+    ERSTEBANK = enum.auto()
 
 
 class AirwallexType(enum.Enum):
@@ -21,19 +22,22 @@ class AirwallexType(enum.Enum):
 
 
 def read_input(start_datetime: datetime, in_path: str, source: InputSource) -> List[Dict]:
-    lines = Path(in_path).read_text().splitlines()
 
     if source == InputSource.NEAT:
-        func = _extract_neat_data
+        lines = Path(in_path).read_text().splitlines()
+        return _extract_neat_data(start_datetime, csv.DictReader(lines))
     elif source == InputSource.AIRWALLEX:
-        func = _extract_airwallex_data
         # skip the first 5 lines in the airwallex csv since it has useless gibberish
+        lines = Path(in_path).read_text().splitlines()
         lines = lines[5:]
+        return _extract_airwallex_data(start_datetime, csv.DictReader(lines))
+    elif source == InputSource.ERSTEBANK:
+        lines = Path(in_path).read_text(encoding="windows-1252").splitlines()
+        # skip the first 1 line in the erste csv since it has useless gibberish
+        lines = lines[1:]
+        return _extract_erste_data(start_datetime, csv.DictReader(lines, delimiter=";"))
     else:
         raise ValueError(f"Unknown source: {source}")
-
-    content = func(start_datetime, csv.DictReader(lines))
-    return content
 
 
 def _extract_neat_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
@@ -88,6 +92,45 @@ def _extract_airwallex_data(start_datetime: datetime, content: csv.DictReader) -
     return result
 
 
+def _extract_erste_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+    result = []
+    transaction_date_header = "Datum izvršenja"  # execution date
+    description_header = "Opis plaæanja, kurs"  # Payment description
+    deposit_header = "Uplate"  # incoming transfers
+    payment_header = "Isplate"  # outgoing payments
+    beneficiary_header = "Primalac"  # Recipient
+
+    for i, c in enumerate(content):
+        c_dt = datetime.strptime(c[transaction_date_header], "%d.%m.%Y")
+        # ignore lines older than the start datetime
+        if c_dt <= start_datetime:
+            continue
+
+        description: str = c[description_header]
+        inbound: str = c[deposit_header].replace(".", "").replace(",", ".")  # use . as decimal (instead of ,)
+        outbound: str = c[payment_header].replace(".", "").replace(",", ".")  # use . as decimal (instead of ,)
+        if inbound and outbound:
+            raise ValueError(f"Both inbound and outbound transactions for {description} (line {i})")
+        elif inbound:
+            amount = inbound
+            if beneficiary := c[beneficiary_header]:
+                description += f" from {beneficiary}"
+        else:
+            amount = "-" + outbound
+            if beneficiary := c[beneficiary_header]:
+                description += f" to {beneficiary}"
+
+        result += [
+            {
+                "Description": description,
+                "Amount": amount,
+                "Date": c_dt.strftime("%Y-%m-%d"),
+            }
+        ]
+
+    return result
+
+
 def write_output(out_path: str, content: List[Dict]) -> None:
     with Path(out_path).open("w", encoding="utf-8") as file:
         headers = content[0].keys()
@@ -104,12 +147,14 @@ def main():
             break
         print("File does not exist. Try again.")
 
-    print("Is the file from Neat or Airwallex? [N/A]")
+    print("Is the file from Neat, Airwallex, or Erstebank? [N/A/E]")
     source_txt = input().lower()
     if source_txt in ["n", "neat"]:
         source = InputSource.NEAT
     elif source_txt in ["a", "airwallex"]:
         source = InputSource.AIRWALLEX
+    elif source_txt in ["e", "erste", "erstebank"]:
+        source = InputSource.ERSTEBANK
     else:
         sys.exit(f"Unknown source {source_txt}. Aborting")
 
