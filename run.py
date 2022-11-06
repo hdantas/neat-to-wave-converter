@@ -3,16 +3,24 @@ This script converts an extract from Neat into a format Wave can understand
 """
 import csv
 import enum
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
+import click
+
 
 class InputSource(enum.Enum):
-    NEAT = enum.auto()
     AIRWALLEX = enum.auto()
     ERSTEBANK = enum.auto()
+    NEAT = enum.auto()
+    PAYONEER = enum.auto()
+    REVOLUT = enum.auto()
+
+
+class OutputSource(enum.Enum):
+    FREEAGENT = enum.auto()
+    WAVE = enum.auto()
 
 
 class AirwallexType(enum.Enum):
@@ -21,21 +29,32 @@ class AirwallexType(enum.Enum):
     PAYOUT = "Payout"
 
 
-def read_input(start_datetime: datetime, in_path: str, source: InputSource) -> List[Dict]:
+CSV_DATE_HEADER = "date"
+CSV_AMOUNT_HEADER = "amount"
+CSV_DESCRIPTION_HEADER = "description"
+
+
+def read_input(start_datetime: datetime, in_path: Path, source: InputSource) -> List[Dict]:
 
     if source == InputSource.NEAT:
-        lines = Path(in_path).read_text().splitlines()
+        lines = in_path.read_text().splitlines()
         return _extract_neat_data(start_datetime, csv.DictReader(lines))
     elif source == InputSource.AIRWALLEX:
         # skip the first 5 lines in the airwallex csv since it has useless gibberish
-        lines = Path(in_path).read_text().splitlines()
+        lines = in_path.read_text().splitlines()
         lines = lines[5:]
         return _extract_airwallex_data(start_datetime, csv.DictReader(lines))
     elif source == InputSource.ERSTEBANK:
-        lines = Path(in_path).read_text(encoding="windows-1252").splitlines()
+        lines = in_path.read_text(encoding="windows-1252").splitlines()
         # skip the first 1 line in the erste csv since it has useless gibberish
         lines = lines[1:]
         return _extract_erste_data(start_datetime, csv.DictReader(lines, delimiter=";"))
+    elif source == InputSource.REVOLUT:
+        lines = in_path.read_text().splitlines()
+        return _extract_revolut_data(start_datetime, csv.DictReader(lines))
+    elif source == InputSource.PAYONEER:
+        lines = in_path.read_text(encoding="utf-8-sig").splitlines()
+        return _extract_payoneer_data(start_datetime, csv.DictReader(lines))
     else:
         raise ValueError(f"Unknown source: {source}")
 
@@ -52,9 +71,9 @@ def _extract_neat_data(start_datetime: datetime, content: csv.DictReader) -> Lis
             continue
         result += [
             {
-                description_header: c[description_header],
-                transaction_amount_header: c[transaction_amount_header],
-                transaction_date_header: c_dt.strftime("%Y-%m-%d"),
+                CSV_DESCRIPTION_HEADER: c[description_header],
+                CSV_AMOUNT_HEADER: c[transaction_amount_header],
+                CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d"),
             }
         ]
     return result
@@ -62,7 +81,6 @@ def _extract_neat_data(start_datetime: datetime, content: csv.DictReader) -> Lis
 
 def _extract_airwallex_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
     result = []
-    description_header = "Type"
     amount_header = "Net Amount"
     transaction_date_header = "Created At"
     transaction_type_header = "Type"
@@ -83,9 +101,9 @@ def _extract_airwallex_data(start_datetime: datetime, content: csv.DictReader) -
 
         result += [
             {
-                description_header: description,
-                amount_header: c[amount_header],
-                transaction_date_header: c_dt.strftime("%Y-%m-%d"),
+                CSV_DESCRIPTION_HEADER: description,
+                CSV_AMOUNT_HEADER: c[amount_header],
+                CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d"),
             }
         ]
 
@@ -121,70 +139,110 @@ def _extract_erste_data(start_datetime: datetime, content: csv.DictReader) -> Li
                 description += f" to {beneficiary}"
 
         result += [
+            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
+        ]
+
+    return result
+
+
+def _extract_revolut_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+    result = []
+    transaction_date_header = "Completed Date"
+    description_header = "Description"
+    amount_header = "Amount"
+
+    for i, c in enumerate(content):
+        c_dt = datetime.strptime(c[transaction_date_header], "%Y-%m-%d %H:%M:%S")
+        # ignore lines older than the start datetime
+        if c_dt <= start_datetime:
+            continue
+
+        description: str = c[description_header].replace(",", "")
+        result += [
             {
-                "Description": description,
-                "Amount": amount,
-                "Date": c_dt.strftime("%Y-%m-%d"),
+                CSV_DESCRIPTION_HEADER: description,
+                CSV_AMOUNT_HEADER: c[amount_header],
+                CSV_DATE_HEADER: c_dt.strftime("%d/%m/%Y"),
             }
         ]
 
     return result
 
 
-def write_output(out_path: str, content: List[Dict]) -> None:
-    with Path(out_path).open("w", encoding="utf-8") as file:
-        headers = content[0].keys()
-        writer = csv.DictWriter(file, fieldnames=headers)
-        writer.writeheader()
+def _extract_payoneer_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+    result = []
+    transaction_date_header = "Date"
+    description_header = "Description"  # Payment description
+    amount_header = "Amount"
+
+    for i, c in enumerate(content):
+        c_dt = datetime.strptime(c[transaction_date_header], "%d %b, %Y")
+        # ignore lines older than the start datetime
+        if c_dt <= start_datetime:
+            continue
+
+        # remove , since freeagent doesn't want them
+        amount: str = c[amount_header].replace(",", "")
+        description: str = c[description_header].replace(",", "")
+
+        result += [
+            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%d/%m/%Y")}
+        ]
+
+    return result
+
+
+def write_output(destination: OutputSource, out_path: Path, content: List[Dict]) -> None:
+    # Wave wants headers, Freeagent doesn't
+    write_header = destination == OutputSource.WAVE
+    with out_path.open("w", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=[CSV_DATE_HEADER, CSV_AMOUNT_HEADER, CSV_DESCRIPTION_HEADER])
+        if write_header:
+            writer.writeheader()
         writer.writerows(content)
 
 
-def main():
-    print("Where is the file to be converted?")
-    while 1:
-        in_path = input()
-        if Path(in_path).exists():
-            break
-        print("File does not exist. Try again.")
-
-    print("Is the file from Neat, Airwallex, or Erstebank? [N/A/E]")
-    source_txt = input().lower()
-    if source_txt in ["n", "neat"]:
-        source = InputSource.NEAT
-    elif source_txt in ["a", "airwallex"]:
-        source = InputSource.AIRWALLEX
-    elif source_txt in ["e", "erste", "erstebank"]:
-        source = InputSource.ERSTEBANK
+@click.command()
+@click.option(
+    "--path",
+    "file_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True, path_type=Path),
+    help="Path for file to be converted.",
+    prompt=True,
+)
+@click.option(
+    "--type",
+    "file_type",
+    type=click.Choice([i.name for i in InputSource], case_sensitive=False),
+    required=True,
+    help="Path for file to be converted.",
+    prompt=True,
+)
+@click.option(
+    "--from",
+    "from_date",
+    help="Date from which we want to convert the file",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=datetime(2000, 1, 1),
+)
+def main(file_path: Path, file_type: str, from_date: datetime) -> None:
+    file_type = InputSource[file_type.upper()]
+    if file_type in [InputSource.REVOLUT, InputSource.PAYONEER]:
+        destination = OutputSource.FREEAGENT
     else:
-        sys.exit(f"Unknown source {source_txt}. Aborting")
-
-    print(
-        "When was the last transaction imported to Wave (eg 2020-07-28 14:48:43)? "
-        "Press enter to include all."
+        destination = OutputSource.WAVE
+    out_path = file_path.with_name(
+        file_path.stem + f"_CONVERTED_{file_type.name}_TO_{destination.name}" + file_path.suffix
     )
-    while 1:
-        start_date_str = input()
-        if not start_date_str:
-            start_date_dt = datetime(2000, 1, 1)
-            break
-        try:
-            start_date_dt = datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            print("Date doesn't match format (eg 2020-07-28 14:48:43). Try again.")
-        else:
-            break
+    if out_path.exists():
+        click.confirm(
+            f"Target file '{out_path.as_posix()}' already exists. Do you want to overwrite?", abort=True, default=False
+        )
 
-    filename, ext = in_path.rsplit(".", 1)
-    out_path = f"{filename}_CONVERTED.{ext}"
-    if Path(out_path).exists():
-        print(f"Target file '{out_path}' already exists. Do you want to overwrite y/N?")
-        overwrite = input()
-        if overwrite.lower() not in ["y", "yes"]:
-            sys.exit("Aborting")
-
-    result = read_input(start_datetime=start_date_dt, in_path=in_path, source=source)
-    write_output(out_path, result)
-    print(f"Done. Converted csv written to\n{out_path}")
+    result = read_input(start_datetime=from_date, in_path=file_path, source=file_type)
+    write_output(destination, out_path, result)
+    click.echo(f"Done. Converted csv written to\n{out_path}.")
 
 
 if __name__ == "__main__":
