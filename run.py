@@ -12,6 +12,7 @@ import click
 
 class InputSource(enum.Enum):
     AIRWALLEX = enum.auto()
+    CURRENXIE = enum.auto()
     ERSTEBANK = enum.auto()
     NEAT = enum.auto()
     PAYONEER = enum.auto()
@@ -55,6 +56,9 @@ def read_input(start_datetime: datetime, in_path: Path, source: InputSource) -> 
     elif source == InputSource.PAYONEER:
         lines = in_path.read_text(encoding="utf-8-sig").splitlines()
         return _extract_payoneer_data(start_datetime, csv.DictReader(lines))
+    elif source == InputSource.CURRENXIE:
+        lines = in_path.read_text().splitlines()
+        return _extract_currenxie_data(start_datetime, csv.DictReader(lines))
     else:
         raise ValueError(f"Unknown source: {source}")
 
@@ -189,6 +193,31 @@ def _extract_payoneer_data(start_datetime: datetime, content: csv.DictReader) ->
             {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%d/%m/%Y")}
         ]
 
+    return result
+
+
+def _extract_currenxie_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+    result = []
+    description_header = "Description"
+    reference_header = "Reference"
+    transaction_amount_header = "*Amount"
+    transaction_date_header = "*Date"
+    for i, c in enumerate(content):
+        c_dt = datetime.strptime(c[transaction_date_header], "%m/%d/%Y")
+        # ignore lines older than the start datetime
+        if c_dt <= start_datetime:
+            continue
+
+        description = c[description_header]
+        if reference := c[reference_header]:
+            description = f"{description} - {reference}".strip()
+        result += [
+            {
+                CSV_DESCRIPTION_HEADER: description,
+                CSV_AMOUNT_HEADER: c[transaction_amount_header],
+                CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d"),
+            }
+        ]
     return result
 
 
