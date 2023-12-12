@@ -1,6 +1,7 @@
 """
 This script converts an extract from Neat into a format Wave can understand
 """
+
 import csv
 import enum
 from datetime import datetime
@@ -154,10 +155,15 @@ def _extract_revolut_data(start_datetime: datetime, content: csv.DictReader) -> 
     transaction_date_header = "Completed Date"
     description_header = "Description"
     amount_header = "Amount"
+    state_header = "State"
 
     for i, c in enumerate(content):
+        # skip non completed transactions (e.g. reverted), these won't have a completed date, so we need to check it 1st
+        if c[state_header] != "COMPLETED":
+            continue
+
         c_dt = datetime.strptime(c[transaction_date_header], "%Y-%m-%d %H:%M:%S")
-        # ignore lines older than the start datetime
+        # ignore lines older than the start datetime,
         if c_dt <= start_datetime:
             continue
 
