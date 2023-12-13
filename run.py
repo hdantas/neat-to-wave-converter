@@ -262,20 +262,20 @@ def write_output(destination: OutputSource, out_path: Path, content: List[Dict])
     default=datetime(2000, 1, 1),
 )
 def main(file_path: Path, file_type: str, from_date: datetime) -> None:
-    file_type = InputSource[file_type.upper()]
-    if file_type in [InputSource.REVOLUT, InputSource.PAYONEER]:
+    file_type_enum = InputSource[file_type.upper()]
+    if file_type_enum in [InputSource.REVOLUT, InputSource.PAYONEER]:
         destination = OutputSource.FREEAGENT
     else:
         destination = OutputSource.WAVE
     out_path = file_path.with_name(
-        file_path.stem + f"_CONVERTED_{file_type.name}_TO_{destination.name}" + file_path.suffix
+        file_path.stem + f"_CONVERTED_{file_type_enum.name}_TO_{destination.name}" + file_path.suffix
     )
     if out_path.exists():
         click.confirm(
             f"Target file '{out_path.as_posix()}' already exists. Do you want to overwrite?", abort=True, default=False
         )
 
-    result = read_input(start_datetime=from_date, in_path=file_path, source=file_type)
+    result = read_input(start_datetime=from_date, in_path=file_path, source=file_type_enum)
     write_output(destination, out_path, result)
     click.echo(f"Done. Converted csv written to\n{out_path}.")
 
