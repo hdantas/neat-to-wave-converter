@@ -2,6 +2,8 @@
 This script converts an extract from Neat into a format Wave can understand
 """
 
+from decimal import Decimal, ROUND_HALF_UP
+
 import csv
 import enum
 from datetime import datetime
@@ -18,6 +20,8 @@ class InputSource(enum.Enum):
     NEAT = enum.auto()
     PAYONEER = enum.auto()
     REVOLUT = enum.auto()
+    STARLING = enum.auto()
+    WISE = enum.auto()
 
 
 class OutputSource(enum.Enum):
@@ -36,7 +40,7 @@ CSV_AMOUNT_HEADER = "amount"
 CSV_DESCRIPTION_HEADER = "description"
 
 
-def read_input(start_datetime: datetime, in_path: Path, source: InputSource) -> List[Dict]:
+def read_input(start_datetime: datetime, in_path: Path, source: InputSource, is_reimbursement: bool) -> List[Dict]:
 
     if source == InputSource.NEAT:
         lines = in_path.read_text().splitlines()
@@ -53,7 +57,13 @@ def read_input(start_datetime: datetime, in_path: Path, source: InputSource) -> 
         return _extract_erste_data(start_datetime, csv.DictReader(lines, delimiter=";"))
     elif source == InputSource.REVOLUT:
         lines = in_path.read_text().splitlines()
-        return _extract_revolut_data(start_datetime, csv.DictReader(lines))
+        return _extract_revolut_data(start_datetime, csv.DictReader(lines), is_reimbursement)
+    elif source == InputSource.WISE:
+        lines = in_path.read_text().splitlines()
+        return _extract_wise_data(start_datetime, csv.DictReader(lines), is_reimbursement)
+    elif source == InputSource.STARLING:
+        lines = in_path.read_text(encoding="unicode_escape").splitlines()
+        return _extract_starling_data(start_datetime, csv.DictReader(lines), is_reimbursement)
     elif source == InputSource.PAYONEER:
         lines = in_path.read_text(encoding="utf-8-sig").splitlines()
         return _extract_payoneer_data(start_datetime, csv.DictReader(lines))
@@ -150,7 +160,7 @@ def _extract_erste_data(start_datetime: datetime, content: csv.DictReader) -> Li
     return result
 
 
-def _extract_revolut_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+def _extract_revolut_data(start_datetime: datetime, content: csv.DictReader, is_reimbursement: bool) -> List[Dict]:
     result = []
     transaction_date_header = "Completed Date"
     description_header = "Description"
@@ -168,15 +178,56 @@ def _extract_revolut_data(start_datetime: datetime, content: csv.DictReader) -> 
             continue
 
         description: str = c[description_header].replace(",", "")
+        if is_reimbursement:
+            # for reimbursements, we don't care about refunds
+            if Decimal(c[amount_header]) > 0:
+                continue
+            amount = str(-Decimal(c[amount_header]).quantize(Decimal(".01"), ROUND_HALF_UP))
+        else:
+            amount = c[amount_header]
         result += [
-            {
-                CSV_DESCRIPTION_HEADER: description,
-                CSV_AMOUNT_HEADER: c[amount_header],
-                CSV_DATE_HEADER: c_dt.strftime("%d/%m/%Y"),
-            }
+            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
         ]
 
     return result
+
+
+def _extract_starling_data(start_datetime: datetime, content: csv.DictReader, is_reimbursement: bool) -> List[Dict]:
+    result = []
+    transaction_date_header = "Date"
+    counter_party_header = "Counter Party"
+    reference_header = "Reference"
+    amount_header = "Amount (GBP)"
+
+    for i, c in enumerate(content):
+        c_dt = datetime.strptime(c[transaction_date_header], "%d/%m/%Y")
+        # ignore lines older than the start datetime,
+        if c_dt <= start_datetime:
+            continue
+
+        counter_party = c[counter_party_header].strip()
+        reference = c[reference_header].strip()
+        if counter_party.lower() == reference.lower():
+            description = counter_party
+        else:
+            description = f"{reference} (to: {counter_party})"
+
+        if is_reimbursement:
+            # for reimbursements, we don't care about refunds
+            if Decimal(c[amount_header]) > 0:
+                continue
+            amount = str(-Decimal(c[amount_header]).quantize(Decimal(".01"), ROUND_HALF_UP))
+        else:
+            amount = c[amount_header]
+        result += [
+            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
+        ]
+
+    return result
+
+
+def _extract_wise_data(start_datetime: datetime, content: csv.DictReader, is_reimbursement: bool) -> List[Dict]:
+    pass
 
 
 def _extract_payoneer_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
@@ -196,7 +247,7 @@ def _extract_payoneer_data(start_datetime: datetime, content: csv.DictReader) ->
         description: str = c[description_header].replace(",", "")
 
         result += [
-            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%d/%m/%Y")}
+            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
         ]
 
     return result
@@ -255,28 +306,50 @@ def write_output(destination: OutputSource, out_path: Path, content: List[Dict])
     prompt=True,
 )
 @click.option(
+    "--target",
+    "target_platform",
+    type=click.Choice([i.name for i in OutputSource], case_sensitive=False),
+    required=False,
+    help="Target platform.",
+    default=OutputSource.WAVE.name,
+)
+@click.option(
+    "--reimbursement",
+    "is_reimbursement",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Is a reimbursement account?",
+)
+@click.option(
     "--from",
     "from_date",
     help="Date from which we want to convert the file",
     type=click.DateTime(formats=["%Y-%m-%d"]),
     default=datetime(2000, 1, 1),
 )
-def main(file_path: Path, file_type: str, from_date: datetime) -> None:
+def main(file_path: Path, file_type: str, target_platform: str, is_reimbursement: bool, from_date: datetime) -> None:
     file_type_enum = InputSource[file_type.upper()]
-    if file_type_enum in [InputSource.REVOLUT, InputSource.PAYONEER]:
-        destination = OutputSource.FREEAGENT
-    else:
-        destination = OutputSource.WAVE
+    target_platform_enum = OutputSource[target_platform.upper()]
     out_path = file_path.with_name(
-        file_path.stem + f"_CONVERTED_{file_type_enum.name}_TO_{destination.name}" + file_path.suffix
+        file_path.stem + f"_CONVERTED_{file_type_enum.name}_TO_{target_platform_enum.name}" + file_path.suffix
     )
     if out_path.exists():
         click.confirm(
             f"Target file '{out_path.as_posix()}' already exists. Do you want to overwrite?", abort=True, default=False
         )
+    if file_type_enum in [InputSource.REVOLUT, InputSource.WISE, InputSource.STARLING] and not is_reimbursement:
+        raise click.BadParameter("Expected reimbursement flag")
+    if is_reimbursement and (
+        file_type_enum not in [InputSource.REVOLUT, InputSource.WISE, InputSource.STARLING]
+        or target_platform_enum != OutputSource.WAVE
+    ):
+        raise click.BadParameter("Did not expect reimbursement flag")
 
-    result = read_input(start_datetime=from_date, in_path=file_path, source=file_type_enum)
-    write_output(destination, out_path, result)
+    result = read_input(
+        start_datetime=from_date, in_path=file_path, source=file_type_enum, is_reimbursement=is_reimbursement
+    )
+    write_output(target_platform_enum, out_path, result)
     click.echo(f"Done. Converted csv written to\n{out_path}.")
 
 
