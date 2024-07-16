@@ -5,9 +5,9 @@ verify_ssl = true
 
 [dev-packages]
 ipdb = "*"
-click = "*"
 
 [packages]
+click = "*"
 
 [requires]
-python_version = "3.8"
+python_version = "3.12"
