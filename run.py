@@ -240,11 +240,13 @@ def _extract_wise_data(start_datetime: datetime, content: csv.DictReader) -> Lis
             continue
 
         transfer_direction = c[direction_header]
-        amount = str(Decimal(c[amount_header]) + Decimal(c[fees_header]).quantize(Decimal(".01"), ROUND_HALF_UP))
+        amount = c[amount_header]
+        fees = c[fees_header]
         if transfer_direction == "IN":
             description = f"Received from {c[source_header]}"
         elif transfer_direction == "OUT":
             amount = f"-{amount}"
+            fees = f"-{fees}"
             description = f"Sent to {c[destination_header]}"
         else:
             raise ValueError(f"Unexpected transfer direction {c['direction']}")
@@ -252,6 +254,14 @@ def _extract_wise_data(start_datetime: datetime, content: csv.DictReader) -> Lis
         result += [
             {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
         ]
+        if Decimal(fees) != Decimal(0):
+            result += [
+                {
+                    CSV_DESCRIPTION_HEADER: f"Fee: {description}",
+                    CSV_AMOUNT_HEADER: fees,
+                    CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d"),
+                }
+            ]
 
     return result
 
