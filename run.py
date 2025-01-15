@@ -2,15 +2,13 @@
 This script converts an extract from Neat into a format Wave can understand
 """
 
-from decimal import Decimal, ROUND_HALF_UP
-
+import click
 import csv
 import enum
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Dict, List
-
-import click
 
 
 class InputSource(enum.Enum):
@@ -60,7 +58,7 @@ def read_input(start_datetime: datetime, in_path: Path, source: InputSource, is_
         return _extract_revolut_data(start_datetime, csv.DictReader(lines), is_reimbursement)
     elif source == InputSource.WISE:
         lines = in_path.read_text().splitlines()
-        return _extract_wise_data(start_datetime, csv.DictReader(lines), is_reimbursement)
+        return _extract_wise_data(start_datetime, csv.DictReader(lines))
     elif source == InputSource.STARLING:
         lines = in_path.read_text(encoding="unicode_escape").splitlines()
         return _extract_starling_data(start_datetime, csv.DictReader(lines), is_reimbursement)
@@ -226,8 +224,36 @@ def _extract_starling_data(start_datetime: datetime, content: csv.DictReader, is
     return result
 
 
-def _extract_wise_data(start_datetime: datetime, content: csv.DictReader, is_reimbursement: bool) -> List[Dict]:
-    pass
+def _extract_wise_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+    result = []
+    amount_header = "Source amount (after fees)"
+    fees_header = "Source fee amount"
+    transaction_date_header = "Created on"
+    direction_header = "Direction"
+    source_header = "Source name"
+    destination_header = "Target name"
+
+    for i, c in enumerate(content):
+        c_dt = datetime.strptime(c[transaction_date_header], "%Y-%m-%d %H:%M:%S")
+        # ignore lines older than the start datetime
+        if c_dt <= start_datetime:
+            continue
+
+        transfer_direction = c[direction_header]
+        amount = str(Decimal(c[amount_header]) + Decimal(c[fees_header]).quantize(Decimal(".01"), ROUND_HALF_UP))
+        if transfer_direction == "IN":
+            description = f"Received from {c[source_header]}"
+        elif transfer_direction == "OUT":
+            amount = f"-{amount}"
+            description = f"Sent to {c[destination_header]}"
+        else:
+            raise ValueError(f"Unexpected transfer direction {c['direction']}")
+
+        result += [
+            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
+        ]
+
+    return result
 
 
 def _extract_payoneer_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
@@ -338,11 +364,10 @@ def main(file_path: Path, file_type: str, target_platform: str, is_reimbursement
         click.confirm(
             f"Target file '{out_path.as_posix()}' already exists. Do you want to overwrite?", abort=True, default=False
         )
-    if file_type_enum in [InputSource.REVOLUT, InputSource.WISE, InputSource.STARLING] and not is_reimbursement:
+    if file_type_enum in [InputSource.REVOLUT, InputSource.STARLING] and not is_reimbursement:
         raise click.BadParameter("Expected reimbursement flag")
     if is_reimbursement and (
-        file_type_enum not in [InputSource.REVOLUT, InputSource.WISE, InputSource.STARLING]
-        or target_platform_enum != OutputSource.WAVE
+        file_type_enum not in [InputSource.REVOLUT, InputSource.STARLING] or target_platform_enum != OutputSource.WAVE
     ):
         raise click.BadParameter("Did not expect reimbursement flag")
 
