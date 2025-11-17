@@ -2,13 +2,25 @@
 This script converts an extract from Neat into a format Wave can understand
 """
 
-import click
 import csv
 import enum
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Dict, List
+from typing import List
+
+import click
+from pydantic import BaseModel, Field
+
+
+class TransactionRecord(BaseModel):
+    """Represents a standardized transaction record."""
+
+    tx_datetime: datetime = Field(description="Transaction date")
+    amount: str = Field(
+        description="Transaction amount (positive for deposits, negative for withdrawals)"
+    )
+    description: str = Field(description="Transaction description")
 
 
 class InputSource(enum.Enum):
@@ -38,8 +50,9 @@ CSV_AMOUNT_HEADER = "amount"
 CSV_DESCRIPTION_HEADER = "description"
 
 
-def read_input(start_datetime: datetime, in_path: Path, source: InputSource, is_reimbursement: bool) -> List[Dict]:
-
+def read_input(
+    start_datetime: datetime, in_path: Path, source: InputSource, is_reimbursement: bool
+) -> List[TransactionRecord]:
     if source == InputSource.NEAT:
         lines = in_path.read_text().splitlines()
         return _extract_neat_data(start_datetime, csv.DictReader(lines))
@@ -55,13 +68,17 @@ def read_input(start_datetime: datetime, in_path: Path, source: InputSource, is_
         return _extract_erste_data(start_datetime, csv.DictReader(lines, delimiter=";"))
     elif source == InputSource.REVOLUT:
         lines = in_path.read_text().splitlines()
-        return _extract_revolut_data(start_datetime, csv.DictReader(lines), is_reimbursement)
+        return _extract_revolut_data(
+            start_datetime, csv.DictReader(lines), is_reimbursement
+        )
     elif source == InputSource.WISE:
         lines = in_path.read_text().splitlines()
         return _extract_wise_data(start_datetime, csv.DictReader(lines))
     elif source == InputSource.STARLING:
         lines = in_path.read_text(encoding="unicode_escape").splitlines()
-        return _extract_starling_data(start_datetime, csv.DictReader(lines), is_reimbursement)
+        return _extract_starling_data(
+            start_datetime, csv.DictReader(lines), is_reimbursement
+        )
     elif source == InputSource.PAYONEER:
         lines = in_path.read_text(encoding="utf-8-sig").splitlines()
         return _extract_payoneer_data(start_datetime, csv.DictReader(lines))
@@ -72,7 +89,9 @@ def read_input(start_datetime: datetime, in_path: Path, source: InputSource, is_
         raise ValueError(f"Unknown source: {source}")
 
 
-def _extract_neat_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+def _extract_neat_data(
+    start_datetime: datetime, content: csv.DictReader
+) -> List[TransactionRecord]:
     result = []
     description_header = "Description"
     transaction_amount_header = "Transaction Amount"
@@ -83,16 +102,18 @@ def _extract_neat_data(start_datetime: datetime, content: csv.DictReader) -> Lis
         if c_dt <= start_datetime:
             continue
         result += [
-            {
-                CSV_DESCRIPTION_HEADER: c[description_header],
-                CSV_AMOUNT_HEADER: c[transaction_amount_header],
-                CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d"),
-            }
+            TransactionRecord(
+                description=c[description_header],
+                amount=c[transaction_amount_header],
+                tx_datetime=c_dt,
+            )
         ]
     return result
 
 
-def _extract_airwallex_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+def _extract_airwallex_data(
+    start_datetime: datetime, content: csv.DictReader
+) -> List[TransactionRecord]:
     result = []
     amount_header = "Net Amount"
     transaction_date_header = "Created At"
@@ -113,17 +134,19 @@ def _extract_airwallex_data(start_datetime: datetime, content: csv.DictReader) -
             description += f" to {c[beneficiary_header]}"
 
         result += [
-            {
-                CSV_DESCRIPTION_HEADER: description,
-                CSV_AMOUNT_HEADER: c[amount_header],
-                CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d"),
-            }
+            TransactionRecord(
+                description=description,
+                amount=c[amount_header],
+                tx_datetime=c_dt,
+            )
         ]
 
     return result
 
 
-def _extract_erste_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+def _extract_erste_data(
+    start_datetime: datetime, content: csv.DictReader
+) -> List[TransactionRecord]:
     result = []
     transaction_date_header = "Datum izvršenja"  # execution date
     description_header = "Opis plaæanja, kurs"  # Payment description
@@ -138,10 +161,16 @@ def _extract_erste_data(start_datetime: datetime, content: csv.DictReader) -> Li
             continue
 
         description: str = c[description_header]
-        inbound: str = c[deposit_header].replace(".", "").replace(",", ".")  # use . as decimal (instead of ,)
-        outbound: str = c[payment_header].replace(".", "").replace(",", ".")  # use . as decimal (instead of ,)
+        inbound: str = (
+            c[deposit_header].replace(".", "").replace(",", ".")
+        )  # use . as decimal (instead of ,)
+        outbound: str = (
+            c[payment_header].replace(".", "").replace(",", ".")
+        )  # use . as decimal (instead of ,)
         if inbound and outbound:
-            raise ValueError(f"Both inbound and outbound transactions for {description} (line {i})")
+            raise ValueError(
+                f"Both inbound and outbound transactions for {description} (line {i})"
+            )
         elif inbound:
             amount = inbound
             if beneficiary := c[beneficiary_header]:
@@ -152,13 +181,19 @@ def _extract_erste_data(start_datetime: datetime, content: csv.DictReader) -> Li
                 description += f" to {beneficiary}"
 
         result += [
-            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
+            TransactionRecord(
+                description=description,
+                amount=amount,
+                tx_datetime=c_dt,
+            )
         ]
 
     return result
 
 
-def _extract_revolut_data(start_datetime: datetime, content: csv.DictReader, is_reimbursement: bool) -> List[Dict]:
+def _extract_revolut_data(
+    start_datetime: datetime, content: csv.DictReader, is_reimbursement: bool
+) -> List[TransactionRecord]:
     result = []
     transaction_date_header = "Completed Date"
     description_header = "Description"
@@ -180,17 +215,25 @@ def _extract_revolut_data(start_datetime: datetime, content: csv.DictReader, is_
             # for reimbursements, we don't care about refunds
             if Decimal(c[amount_header]) > 0:
                 continue
-            amount = str(-Decimal(c[amount_header]).quantize(Decimal(".01"), ROUND_HALF_UP))
+            amount = str(
+                -Decimal(c[amount_header]).quantize(Decimal(".01"), ROUND_HALF_UP)
+            )
         else:
             amount = c[amount_header]
         result += [
-            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
+            TransactionRecord(
+                description=description,
+                amount=amount,
+                tx_datetime=c_dt,
+            )
         ]
 
     return result
 
 
-def _extract_starling_data(start_datetime: datetime, content: csv.DictReader, is_reimbursement: bool) -> List[Dict]:
+def _extract_starling_data(
+    start_datetime: datetime, content: csv.DictReader, is_reimbursement: bool
+) -> List[TransactionRecord]:
     result = []
     transaction_date_header = "Date"
     counter_party_header = "Counter Party"
@@ -214,17 +257,25 @@ def _extract_starling_data(start_datetime: datetime, content: csv.DictReader, is
             # for reimbursements, we don't care about refunds
             if Decimal(c[amount_header]) > 0:
                 continue
-            amount = str(-Decimal(c[amount_header]).quantize(Decimal(".01"), ROUND_HALF_UP))
+            amount = str(
+                -Decimal(c[amount_header]).quantize(Decimal(".01"), ROUND_HALF_UP)
+            )
         else:
             amount = c[amount_header]
         result += [
-            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
+            TransactionRecord(
+                description=description,
+                amount=amount,
+                tx_datetime=c_dt,
+            )
         ]
 
     return result
 
 
-def _extract_wise_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+def _extract_wise_data(
+    start_datetime: datetime, content: csv.DictReader
+) -> List[TransactionRecord]:
     result = []
     amount_header = "Source amount (after fees)"
     fees_header = "Source fee amount"
@@ -252,22 +303,34 @@ def _extract_wise_data(start_datetime: datetime, content: csv.DictReader) -> Lis
             raise ValueError(f"Unexpected transfer direction {c['direction']}")
 
         result += [
-            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
+            TransactionRecord(
+                description=description,
+                amount=amount,
+                tx_datetime=c_dt,
+            )
         ]
         if Decimal(fees) != Decimal(0):
             result += [
-                {
-                    CSV_DESCRIPTION_HEADER: f"Fee: {description}",
-                    CSV_AMOUNT_HEADER: fees,
-                    CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d"),
-                }
+                TransactionRecord(
+                    description=f"Fee: {description}",
+                    amount=fees,
+                    tx_datetime=c_dt,
+                )
             ]
 
     return result
 
 
-def _extract_payoneer_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+def _extract_payoneer_data(
+    start_datetime: datetime, content: csv.DictReader
+) -> List[TransactionRecord]:
     result = []
+    "Transaction date"
+    "Transaction time"
+    "Time zone"
+    "Credit amount"
+    "Debit amount"
+
     transaction_date_header = "Date"
     description_header = "Description"  # Payment description
     amount_header = "Amount"
@@ -283,13 +346,19 @@ def _extract_payoneer_data(start_datetime: datetime, content: csv.DictReader) ->
         description: str = c[description_header].replace(",", "")
 
         result += [
-            {CSV_DESCRIPTION_HEADER: description, CSV_AMOUNT_HEADER: amount, CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d")}
+            TransactionRecord(
+                description=description,
+                amount=amount,
+                tx_datetime=c_dt,
+            )
         ]
 
     return result
 
 
-def _extract_currenxie_data(start_datetime: datetime, content: csv.DictReader) -> List[Dict]:
+def _extract_currenxie_data(
+    start_datetime: datetime, content: csv.DictReader
+) -> List[TransactionRecord]:
     result = []
     description_header = "Description"
     reference_header = "Reference"
@@ -305,23 +374,38 @@ def _extract_currenxie_data(start_datetime: datetime, content: csv.DictReader) -
         if reference := c[reference_header]:
             description = f"{description} - {reference}".strip()
         result += [
-            {
-                CSV_DESCRIPTION_HEADER: description,
-                CSV_AMOUNT_HEADER: c[transaction_amount_header],
-                CSV_DATE_HEADER: c_dt.strftime("%Y-%m-%d"),
-            }
+            TransactionRecord(
+                description=description,
+                amount=c[transaction_amount_header],
+                tx_datetime=c_dt,
+            )
         ]
     return result
 
 
-def write_output(destination: OutputSource, out_path: Path, content: List[Dict]) -> None:
-    # Wave wants headers, Freeagent doesn't
-    write_header = destination == OutputSource.WAVE
+def write_output(
+    destination: OutputSource, out_path: Path, content: List[TransactionRecord]
+) -> None:
+    is_wave = destination == OutputSource.WAVE
+    date_format = "%Y-%m-%d" if is_wave else "%d/%m/%Y"
     with out_path.open("w", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=[CSV_DATE_HEADER, CSV_AMOUNT_HEADER, CSV_DESCRIPTION_HEADER])
-        if write_header:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=[CSV_DATE_HEADER, CSV_AMOUNT_HEADER, CSV_DESCRIPTION_HEADER],
+        )
+        # Wave wants headers, Freeagent doesn't
+        if is_wave:
             writer.writeheader()
-        writer.writerows(content)
+        # Convert TransactionRecord objects to dictionaries for CSV writing
+        rows = [
+            {
+                CSV_DATE_HEADER: record.tx_datetime.strftime(date_format),
+                CSV_AMOUNT_HEADER: record.amount,
+                CSV_DESCRIPTION_HEADER: record.description,
+            }
+            for record in content
+        ]
+        writer.writerows(rows)
 
 
 @click.command()
@@ -364,25 +448,39 @@ def write_output(destination: OutputSource, out_path: Path, content: List[Dict])
     type=click.DateTime(formats=["%Y-%m-%d"]),
     default=datetime(2000, 1, 1),
 )
-def main(file_path: Path, file_type: str, target_platform: str, is_reimbursement: bool, from_date: datetime) -> None:
+def main(
+    file_path: Path,
+    file_type: str,
+    target_platform: str,
+    is_reimbursement: bool,
+    from_date: datetime,
+) -> None:
     file_type_enum = InputSource[file_type.upper()]
     target_platform_enum = OutputSource[target_platform.upper()]
     out_path = file_path.with_name(
-        file_path.stem + f"_CONVERTED_{file_type_enum.name}_TO_{target_platform_enum.name}" + file_path.suffix
+        file_path.stem
+        + f"_CONVERTED_{file_type_enum.name}_TO_{target_platform_enum.name}"
+        + file_path.suffix
     )
     if out_path.exists():
         click.confirm(
-            f"Target file '{out_path.as_posix()}' already exists. Do you want to overwrite?", abort=True, default=False
+            f"Target file '{out_path.as_posix()}' already exists. Do you want to overwrite?",
+            abort=True,
+            default=False,
         )
-    if file_type_enum in [InputSource.REVOLUT, InputSource.STARLING] and not is_reimbursement:
+    if file_type_enum in [InputSource.STARLING] and not is_reimbursement:
         raise click.BadParameter("Expected reimbursement flag")
     if is_reimbursement and (
-        file_type_enum not in [InputSource.REVOLUT, InputSource.STARLING] or target_platform_enum != OutputSource.WAVE
+        file_type_enum not in [InputSource.REVOLUT, InputSource.STARLING]
+        or target_platform_enum != OutputSource.WAVE
     ):
         raise click.BadParameter("Did not expect reimbursement flag")
 
     result = read_input(
-        start_datetime=from_date, in_path=file_path, source=file_type_enum, is_reimbursement=is_reimbursement
+        start_datetime=from_date,
+        in_path=file_path,
+        source=file_type_enum,
+        is_reimbursement=is_reimbursement,
     )
     write_output(target_platform_enum, out_path, result)
     click.echo(f"Done. Converted csv written to\n{out_path}.")

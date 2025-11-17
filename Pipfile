@@ -8,6 +8,7 @@ ipdb = "*"
 
 [packages]
 click = "*"
+pydantic = "*"
 
 [requires]
 python_version = "3.12"
