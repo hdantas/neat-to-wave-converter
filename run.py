@@ -325,24 +325,64 @@ def _extract_payoneer_data(
     start_datetime: datetime, content: csv.DictReader
 ) -> List[TransactionRecord]:
     result = []
-    "Transaction date"
-    "Transaction time"
-    "Time zone"
-    "Credit amount"
-    "Debit amount"
 
-    transaction_date_header = "Date"
-    description_header = "Description"  # Payment description
-    amount_header = "Amount"
+    transaction_date_header = "Transaction date"
+    transaction_time_header = "Transaction time"
+    timezone_header = "Time zone"
+    credit_amount_header = "Credit amount"
+    debit_amount_header = "Debit amount"
+    description_header = "Description"
 
     for i, c in enumerate(content):
-        c_dt = datetime.strptime(c[transaction_date_header], "%d %b, %Y")
+        # Combine date, time, and timezone to create datetime
+        date_str = c[transaction_date_header]
+        time_str = c[transaction_time_header]
+        timezone_str = c[timezone_header]
+
+        # Parse the datetime (assuming format MM-DD-YYYY HH:MM:SS TZ)
+        datetime_str = f"{date_str} {time_str} {timezone_str}"
+        c_dt = datetime.strptime(datetime_str, "%m-%d-%Y %H:%M:%S %Z")
+
         # ignore lines older than the start datetime
         if c_dt <= start_datetime:
             continue
 
-        # remove , since freeagent doesn't want them
-        amount: str = c[amount_header].replace(",", "")
+        # Get credit and debit amounts
+        credit_str = c[credit_amount_header].replace(",", "").strip()
+        debit_str = c[debit_amount_header].replace(",", "").strip()
+
+        # Convert to Decimal for validation
+        credit = Decimal(credit_str) if credit_str else Decimal("0")
+        debit = Decimal(debit_str) if debit_str else Decimal("0")
+
+        # Validate amount logic
+        if credit == Decimal("0") and debit == Decimal("0"):
+            raise ValueError(
+                f"Both credit and debit amounts are zero for transaction on {c_dt} (line {i})"
+            )
+
+        if credit < Decimal("0"):
+            raise ValueError(
+                f"Credit amount cannot be negative: {credit} for transaction on {c_dt} (line {i})"
+            )
+
+        if debit > Decimal("0"):
+            raise ValueError(
+                f"Debit amount cannot be positive: {debit} for transaction on {c_dt} (line {i})"
+            )
+
+        if credit != Decimal("0") and debit != Decimal("0"):
+            raise ValueError(
+                f"Both credit and debit amounts are non-zero for transaction on {c_dt} (line {i})"
+            )
+
+        # Determine the amount (credit is positive, debit is negative)
+        if credit != Decimal("0"):
+            amount = str(credit)
+        else:
+            amount = str(debit)  # debit should already be negative
+
+        # Clean description
         description: str = c[description_header].replace(",", "")
 
         result += [
