@@ -403,7 +403,7 @@ def _extract_currenxie_data(
     description_header = "Description"
     reference_header = "Reference"
     transaction_amount_header = "*Amount"
-    transaction_date_header = "*Date"
+    transaction_date_header = "*Date (MM/DD/YYYY)"
     for i, c in enumerate(content):
         c_dt = datetime.strptime(c[transaction_date_header], "%m/%d/%Y")
         # ignore lines older than the start datetime
